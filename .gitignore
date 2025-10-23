@@ -8,3 +8,13 @@ dist
 **/.DS_Store
 /nix/
 /.mcp.json
+
+# Go specific
+*.exe
+*.test
+vendor/
+*.out
+*.log
+.env*
+coverage.out
+*.prof
