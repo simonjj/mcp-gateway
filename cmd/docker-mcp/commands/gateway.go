@@ -68,6 +68,9 @@ func gatewayCommand(docker docker.Client, dockerCli command.Cli) *cobra.Command 
 		Short: "Run the gateway",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			// Parse MCP_RUNTIME environment variable
+			options.RuntimeMode = os.Getenv("MCP_RUNTIME")
+
 			// Check if OAuth interceptor feature is enabled
 			options.OAuthInterceptorEnabled = isOAuthInterceptorFeatureEnabled(dockerCli)
 

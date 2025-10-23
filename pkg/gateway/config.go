@@ -36,4 +36,5 @@ type Options struct {
 	DynamicTools            bool
 	ToolNamePrefix          bool
 	LogFilePath             string
+	RuntimeMode             string // "ACA" for Azure Container Apps, empty/anything else for Docker
 }

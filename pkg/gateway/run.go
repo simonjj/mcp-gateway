@@ -18,6 +18,7 @@ import (
 	"github.com/docker/mcp-gateway/pkg/interceptors"
 	"github.com/docker/mcp-gateway/pkg/log"
 	"github.com/docker/mcp-gateway/pkg/oauth"
+	"github.com/docker/mcp-gateway/pkg/runtime"
 	"github.com/docker/mcp-gateway/pkg/telemetry"
 )
 
@@ -48,14 +49,15 @@ type ServerCapabilities struct {
 
 type Gateway struct {
 	Options
-	docker         docker.Client
-	configurator   Configurator
-	configuration  Configuration
-	clientPool     *clientPool
-	mcpServer      *mcp.Server
-	health         health.State
-	oauthProviders map[string]*oauth.Provider
-	providersMu    sync.RWMutex
+	docker           docker.Client
+	runtimeProvider  runtime.RuntimeProvider // Runtime provider abstraction (Docker or ACA)
+	configurator     Configurator
+	configuration    Configuration
+	clientPool       *clientPool
+	mcpServer        *mcp.Server
+	health           health.State
+	oauthProviders   map[string]*oauth.Provider
+	providersMu      sync.RWMutex
 	// subsChannel  chan SubsMessage
 
 	sessionCacheMu sync.RWMutex
@@ -72,10 +74,19 @@ type Gateway struct {
 }
 
 func NewGateway(config Config, docker docker.Client) *Gateway {
+	// Initialize runtime provider based on RuntimeMode
+	provider, err := NewRuntimeProvider(config.RuntimeMode, docker)
+	if err != nil {
+		// For MVP, if ACA provider fails, fall back to Docker
+		// ACA mode not yet implemented in MVP
+		provider = NewDockerProvider(docker)
+	}
+
 	g := &Gateway{
-		Options:        config.Options,
-		docker:         docker,
-		oauthProviders: make(map[string]*oauth.Provider),
+		Options:         config.Options,
+		docker:          docker,
+		runtimeProvider: provider,
+		oauthProviders:  make(map[string]*oauth.Provider),
 		configurator: &FileBasedConfiguration{
 			ServerNames:        config.ServerNames,
 			CatalogPath:        config.CatalogPath,
