@@ -79,7 +79,27 @@ func NewGateway(config Config, docker docker.Client) *Gateway {
 	if err != nil {
 		// For MVP, if ACA provider fails, fall back to Docker
 		// ACA mode not yet implemented in MVP
+		log.Logf("Warning: Failed to create runtime provider for mode '%s': %v", config.RuntimeMode, err)
+		log.Logf("Falling back to Docker runtime mode")
 		provider = NewDockerProvider(docker)
+	}
+
+	// Initialize the provider (required for ACA mode to connect to Azure APIs)
+	if err := provider.Initialize(context.Background()); err != nil {
+		log.Logf("Warning: Failed to initialize runtime provider: %v", err)
+		if config.RuntimeMode == "ACA" {
+			log.Logf("ACA mode initialization failed - this usually means:")
+			log.Logf("  1. Missing required environment variables:")
+			log.Logf("     - AZURE_SUBSCRIPTION_ID (your Azure subscription ID)")
+			log.Logf("     - AZURE_RESOURCE_GROUP (resource group containing the Container App)")
+			log.Logf("     - AZURE_APP_NAME or CONTAINER_APP_NAME (name of this Container App)")
+			log.Logf("  2. System Assigned Identity is not enabled on the Container App")
+			log.Logf("  3. Identity does not have 'Contributor' role on the Container App resource")
+			log.Logf("Falling back to Docker runtime mode")
+			provider = NewDockerProvider(docker)
+			// Initialize Docker provider (should succeed immediately)
+			_ = provider.Initialize(context.Background())
+		}
 	}
 
 	g := &Gateway{
@@ -228,8 +248,9 @@ func (g *Gateway) Run(ctx context.Context) error {
 			return err
 		}
 
-		// When running in a container, find on which network we are running.
-		if os.Getenv("DOCKER_MCP_IN_CONTAINER") == "1" {
+		// When running in a Docker container (not ACA), find on which network we are running.
+		// ACA handles networking automatically, so we skip network discovery in ACA mode.
+		if os.Getenv("DOCKER_MCP_IN_CONTAINER") == "1" && os.Getenv("MCP_RUNTIME") != "ACA" {
 			networks, err := g.guessNetworks(ctx)
 			if err != nil {
 				return fmt.Errorf("guessing network: %w", err)

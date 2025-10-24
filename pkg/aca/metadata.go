@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"strings"
 	"time"
 )
 
@@ -15,6 +17,18 @@ type ACAMetadata struct {
 	ResourceGroup  string // Resource group name
 	AppName        string // Container App name
 	Location       string // Azure region
+}
+
+// maskValue returns "[set]" if value is non-empty, "[NOT SET]" otherwise
+func maskValue(value string) string {
+	if value == "" {
+		return "[NOT SET]"
+	}
+	// Show first 8 chars for readability (useful for debugging without exposing full values)
+	if len(value) > 12 {
+		return value[:8] + "..." + value[len(value)-4:]
+	}
+	return "[set]"
 }
 
 // imdsResponse represents the response from Azure Instance Metadata Service
@@ -116,16 +130,66 @@ func parseMetadata(imdsResp *imdsResponse) (*ACAMetadata, error) {
 	return metadata, nil
 }
 
-// DiscoverMetadata queries IMDS and parses the metadata
+// DiscoverMetadata discovers Azure environment metadata from environment variables or IMDS
+// Priority: 1) Environment variables (ACA standard), 2) IMDS (Azure VMs)
 func DiscoverMetadata(ctx context.Context) (*ACAMetadata, error) {
-	imdsResp, err := queryIMDS(ctx)
-	if err != nil {
-		return nil, err
+	// Try environment variables first (ACA standard approach)
+	metadata, err := discoverFromEnvVars()
+	if err == nil {
+		return metadata, nil
 	}
 
-	metadata, err := parseMetadata(imdsResp)
+	// Fallback to IMDS for Azure VMs (not typically available in ACA)
+	imdsResp, err := queryIMDS(ctx)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to discover metadata from environment variables and IMDS is not accessible: %w", err)
+	}
+
+	return parseMetadata(imdsResp)
+}
+
+// discoverFromEnvVars reads metadata from environment variables
+// ACA automatically injects these, or they can be set manually
+func discoverFromEnvVars() (*ACAMetadata, error) {
+	// Check for explicit environment variables first
+	subscriptionID := os.Getenv("AZURE_SUBSCRIPTION_ID")
+	resourceGroup := os.Getenv("AZURE_RESOURCE_GROUP")
+	appName := os.Getenv("AZURE_APP_NAME")
+
+	// Log what we found (or didn't find)
+	fmt.Fprintf(os.Stderr, "ACA Metadata Discovery: Checking environment variables...\n")
+	fmt.Fprintf(os.Stderr, "  AZURE_SUBSCRIPTION_ID: %s\n", maskValue(subscriptionID))
+	fmt.Fprintf(os.Stderr, "  AZURE_RESOURCE_GROUP: %s\n", maskValue(resourceGroup))
+	fmt.Fprintf(os.Stderr, "  AZURE_APP_NAME: %s\n", maskValue(appName))
+
+	// If not set explicitly, try to derive from CONTAINER_APP_NAME and other ACA env vars
+	if appName == "" {
+		// ACA sets CONTAINER_APP_NAME automatically
+		appName = os.Getenv("CONTAINER_APP_NAME")
+		fmt.Fprintf(os.Stderr, "  CONTAINER_APP_NAME: %s\n", maskValue(appName))
+	}
+
+	// Validate we have the minimum required fields
+	var missingVars []string
+	if subscriptionID == "" {
+		missingVars = append(missingVars, "AZURE_SUBSCRIPTION_ID")
+	}
+	if resourceGroup == "" {
+		missingVars = append(missingVars, "AZURE_RESOURCE_GROUP")
+	}
+	if appName == "" {
+		missingVars = append(missingVars, "AZURE_APP_NAME or CONTAINER_APP_NAME")
+	}
+
+	if len(missingVars) > 0 {
+		return nil, fmt.Errorf("missing required environment variables: %s", strings.Join(missingVars, ", "))
+	}
+
+	metadata := &ACAMetadata{
+		SubscriptionID: subscriptionID,
+		ResourceGroup:  resourceGroup,
+		AppName:        appName,
+		Location:       os.Getenv("AZURE_LOCATION"), // Optional, may be empty
 	}
 
 	return metadata, nil
