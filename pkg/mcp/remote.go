@@ -7,24 +7,38 @@ import (
 	"os"
 	"strings"
 	"sync/atomic"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/docker/mcp-gateway/pkg/catalog"
+	"github.com/docker/mcp-gateway/pkg/log"
 	"github.com/docker/mcp-gateway/pkg/oauth"
 )
 
 type remoteMCPClient struct {
-	config      *catalog.ServerConfig
-	client      *mcp.Client
-	session     *mcp.ClientSession
-	roots       []*mcp.Root
-	initialized atomic.Bool
+	config       *catalog.ServerConfig
+	client       *mcp.Client
+	session      *mcp.ClientSession
+	roots        []*mcp.Root
+	initialized  atomic.Bool
+	retryEnabled bool // If true, will retry connection with exponential backoff
 }
 
 func NewRemoteMCPClient(config *catalog.ServerConfig) Client {
 	return &remoteMCPClient{
-		config: config,
+		config:       config,
+		retryEnabled: false,
+	}
+}
+
+// NewRemoteMCPClientWithRetry creates a remote MCP client that will retry connections
+// with exponential backoff. This is useful for ACA mode where SSE wrapper containers
+// may take time to start up and become ready.
+func NewRemoteMCPClientWithRetry(config *catalog.ServerConfig) Client {
+	return &remoteMCPClient{
+		config:       config,
+		retryEnabled: true,
 	}
 }
 
@@ -100,7 +114,14 @@ func (c *remoteMCPClient) Initialize(ctx context.Context, _ *mcp.InitializeParam
 
 	c.client.AddRoots(c.roots...)
 
-	session, err := c.client.Connect(ctx, mcpTransport, nil)
+	// Connect with optional retry logic for ACA SSE wrapper startup
+	var session *mcp.ClientSession
+	if c.retryEnabled {
+		session, err = c.connectWithRetry(ctx, mcpTransport)
+	} else {
+		session, err = c.client.Connect(ctx, mcpTransport, nil)
+	}
+	
 	if err != nil {
 		return fmt.Errorf("failed to connect: %w", err)
 	}
@@ -109,6 +130,48 @@ func (c *remoteMCPClient) Initialize(ctx context.Context, _ *mcp.InitializeParam
 	c.initialized.Store(true)
 
 	return nil
+}
+
+// connectWithRetry attempts to connect with exponential backoff for ACA SSE wrapper startup
+func (c *remoteMCPClient) connectWithRetry(ctx context.Context, transport mcp.Transport) (*mcp.ClientSession, error) {
+	const (
+		maxRetries     = 10
+		initialBackoff = 500 * time.Millisecond
+		maxBackoff     = 10 * time.Second
+	)
+
+	var lastErr error
+	backoff := initialBackoff
+
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		if attempt > 0 {
+			log.Logf("  > Retry %d/%d: Waiting %v before attempting connection...", attempt, maxRetries-1, backoff)
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(backoff):
+			}
+			
+			// Exponential backoff with cap
+			backoff *= 2
+			if backoff > maxBackoff {
+				backoff = maxBackoff
+			}
+		}
+
+		session, err := c.client.Connect(ctx, transport, nil)
+		if err == nil {
+			if attempt > 0 {
+				log.Logf("  > Successfully connected after %d retries", attempt)
+			}
+			return session, nil
+		}
+
+		lastErr = err
+		log.Logf("  > Connection attempt %d failed: %v", attempt+1, err)
+	}
+
+	return nil, fmt.Errorf("failed to connect after %d attempts: %w", maxRetries, lastErr)
 }
 
 func (c *remoteMCPClient) Session() *mcp.ClientSession { return c.session }

@@ -8,8 +8,10 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/docker/mcp-gateway/pkg/aca"
 	"github.com/docker/mcp-gateway/pkg/log"
 	"github.com/docker/mcp-gateway/pkg/prompts"
+	"github.com/docker/mcp-gateway/pkg/runtime"
 )
 
 func (g *Gateway) reloadConfiguration(ctx context.Context, configuration Configuration, serverNames []string, clientConfig *clientConfig) error {
@@ -21,6 +23,13 @@ func (g *Gateway) reloadConfiguration(ctx context.Context, configuration Configu
 		log.Log("- No server is enabled")
 	} else {
 		log.Log("- Those servers are enabled:", strings.Join(serverNames, ", "))
+	}
+
+	// In ACA mode, enable servers via runtime provider before listing capabilities
+	if g.RuntimeMode == "ACA" {
+		if err := g.enableServersInACA(ctx, serverNames, configuration); err != nil {
+			return err
+		}
 	}
 
 	// List all the available tools.
@@ -304,6 +313,95 @@ func (g *Gateway) reloadServerConfiguration(ctx context.Context, serverName stri
 	// Update tracking with new capabilities
 	g.serverCapabilities[serverName] = newCaps
 
+	return nil
+}
+
+// enableServersInACA enables MCP servers as containers in Azure Container Apps
+func (g *Gateway) enableServersInACA(ctx context.Context, serverNames []string, configuration Configuration) error {
+	log.Log("- Enabling servers in ACA mode...")
+
+	for _, serverName := range serverNames {
+		serverConfig, _, found := configuration.Find(serverName)
+		if !found || serverConfig == nil {
+			log.Logf("  > Server '%s' not found in configuration, skipping", serverName)
+			continue
+		}
+
+		// Determine transport type
+		transport := "stdio" // default
+		if serverConfig.Spec.Remote.Transport != "" {
+			transport = serverConfig.Spec.Remote.Transport
+		} else if serverConfig.Spec.SSEEndpoint != "" {
+			transport = "sse"
+		} else if serverConfig.Spec.Remote.URL != "" {
+			transport = "sse"
+		}
+
+		// Check if this is stdio and if we have a wrapper
+		image := serverConfig.Spec.Image
+		if transport == "stdio" {
+			if wrapperImage, hasWrapper := aca.GetSSEWrapper(image); hasWrapper {
+				log.Logf("  > Server '%s' is stdio, using SSE wrapper: %s", serverName, wrapperImage)
+				image = wrapperImage
+				transport = "sse"
+				
+				// Update the catalog entry so listCapabilities() sees the correct transport
+				serverConfig.Spec.Image = wrapperImage
+				serverConfig.Spec.Remote.Transport = "sse"
+				serverConfig.Spec.Remote.URL = "http://localhost:3000/sse"
+			} else {
+				log.Logf("")
+				log.Logf("ERROR: Server '%s' uses stdio transport which is not supported in ACA mode.", serverName)
+				log.Logf("       No SSE wrapper is available for image: %s", image)
+				log.Logf("")
+				log.Logf("Stdio servers cannot run in Azure Container Apps because stdin/stdout")
+				log.Logf("pipes do not cross container boundaries.")
+				log.Logf("")
+				log.Logf("Please either:")
+				log.Logf("  1. Use an SSE or streaming transport server instead")
+				log.Logf("  2. Build an SSE wrapper for this server (see sse-wrapped-stdio/README.md)")
+				log.Logf("  3. Run in Docker mode (unset MCP_RUNTIME environment variable)")
+				log.Logf("")
+				return fmt.Errorf("stdio server '%s' not supported in ACA mode", serverName)
+			}
+		}
+
+		// Build environment variables
+		env := make(map[string]string)
+		for _, e := range serverConfig.Spec.Env {
+			env[e.Name] = e.Value
+		}
+
+		// Build secrets (convert to env vars for ACA)
+		for _, secret := range serverConfig.Spec.Secrets {
+			if val, ok := serverConfig.Secrets[secret.Name]; ok {
+				env[secret.Env] = val
+			}
+		}
+
+		// Determine port (SSE wrappers use 3000, others may specify)
+		port := 3000
+		if transport == "stdio" {
+			port = 3000 // wrapper port
+		}
+
+		// Create runtime.ServerConfig
+		runtimeConfig := runtime.ServerConfig{
+			Name:      serverName,
+			Image:     image,
+			Transport: transport,
+			Port:      port,
+			Env:       env,
+			Secrets:   serverConfig.Secrets,
+		}
+
+		// Enable the server via runtime provider
+		if err := g.runtimeProvider.EnableServer(ctx, runtimeConfig); err != nil {
+			return fmt.Errorf("failed to enable server '%s': %w", serverName, err)
+		}
+	}
+
+	log.Log("  > All servers enabled in ACA")
 	return nil
 }
 

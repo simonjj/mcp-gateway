@@ -223,12 +223,25 @@ func (p *ACAProvider) EnableServer(ctx context.Context, server runtime.ServerCon
 		return fmt.Errorf("provider not initialized")
 	}
 
-	log.Logf("Enabling MCP server '%s' with image '%s' and transport '%s'", server.Name, server.Image, server.Transport)
+	log.Logf("Catalog info for server '%s': Image='%s', Transport='%s'", server.Name, server.Image, server.Transport)
 
-	// Validate transport - stdio not supported
+	// Check if this is a stdio server that has an SSE wrapper available
 	if server.Transport == "stdio" {
-		log.Logf("Rejected server '%s': stdio transport not supported in ACA mode", server.Name)
-		return fmt.Errorf("stdio transport not supported in ACA mode")
+		if wrapperImage, hasWrapper := GetSSEWrapper(server.Image); hasWrapper {
+			log.Logf("Detected stdio server '%s' - substituting with SSE wrapper: '%s'", server.Name, wrapperImage)
+			server.Image = wrapperImage
+			server.Transport = "sse"
+			// Wrapper serves SSE on port 3000
+			if server.Port == 0 {
+				server.Port = 3000
+			}
+			log.Logf("Enabling wrapped server '%s' with image '%s' and transport '%s' on port %d", server.Name, server.Image, server.Transport, server.Port)
+		} else {
+			log.Logf("Rejected server '%s': stdio transport not supported in ACA mode (no SSE wrapper available for image '%s')", server.Name, server.Image)
+			return fmt.Errorf("stdio transport not supported in ACA mode - no SSE wrapper available for image '%s'", server.Image)
+		}
+	} else {
+		log.Logf("Enabling server '%s' with image '%s' and transport '%s'", server.Name, server.Image, server.Transport)
 	}
 
 	// Build container spec

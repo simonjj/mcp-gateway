@@ -123,7 +123,7 @@ func NewGateway(config Config, docker docker.Client) *Gateway {
 		sessionCache:       make(map[*mcp.ServerSession]*ServerSessionCache),
 		serverCapabilities: make(map[string]*ServerCapabilities),
 	}
-	g.clientPool = newClientPool(config.Options, docker, g)
+	g.clientPool = newClientPool(config.Options, docker, provider, g)
 	return g
 }
 
@@ -243,14 +243,15 @@ func (g *Gateway) Run(ctx context.Context) error {
 
 	// Which docker images are used?
 	// Pull them and verify them if possible.
-	if !g.Static {
+	// Skip image pulling in ACA mode as images are managed by Azure
+	if !g.Static && g.RuntimeMode != "ACA" {
 		if err := g.pullAndVerify(ctx, configuration); err != nil {
 			return err
 		}
 
 		// When running in a Docker container (not ACA), find on which network we are running.
 		// ACA handles networking automatically, so we skip network discovery in ACA mode.
-		if os.Getenv("DOCKER_MCP_IN_CONTAINER") == "1" && os.Getenv("MCP_RUNTIME") != "ACA" {
+		if os.Getenv("DOCKER_MCP_IN_CONTAINER") == "1" {
 			networks, err := g.guessNetworks(ctx)
 			if err != nil {
 				return fmt.Errorf("guessing network: %w", err)
@@ -333,11 +334,19 @@ func (g *Gateway) Run(ctx context.Context) error {
 	// Start the server
 	switch transport {
 	case "stdio":
+		if g.RuntimeMode == "ACA" {
+			// Stdio transport doesn't make sense for gateway in ACA mode
+			// (gateway should use SSE or streaming to expose aggregated servers)
+			return fmt.Errorf("stdio transport not supported for gateway in ACA mode - use 'sse' or 'streaming' instead")
+		}
 		log.Log("> Start stdio server")
 		return g.startStdioServer(ctx, os.Stdin, os.Stdout)
 
 	case "sse":
 		log.Log("> Start sse server on port", g.Port)
+		if g.RuntimeMode == "ACA" {
+			log.Log("> ACA mode: Gateway acts as aggregator (server for external clients, client for internal MCP servers)")
+		}
 		endpoint := "/sse"
 		url := formatGatewayURL(g.Port, endpoint)
 		if g.authTokenWasGenerated {

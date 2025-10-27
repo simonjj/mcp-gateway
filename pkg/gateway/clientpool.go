@@ -10,12 +10,14 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/docker/mcp-gateway/pkg/aca"
 	"github.com/docker/mcp-gateway/pkg/catalog"
 	"github.com/docker/mcp-gateway/pkg/docker"
 	"github.com/docker/mcp-gateway/pkg/eval"
 	"github.com/docker/mcp-gateway/pkg/gateway/proxies"
 	"github.com/docker/mcp-gateway/pkg/log"
 	mcpclient "github.com/docker/mcp-gateway/pkg/mcp"
+	"github.com/docker/mcp-gateway/pkg/runtime"
 )
 
 type clientKey struct {
@@ -32,11 +34,12 @@ type keptClient struct {
 
 type clientPool struct {
 	Options
-	keptClients map[clientKey]keptClient
-	clientLock  sync.RWMutex
-	networks    []string
-	docker      docker.Client
-	gateway     *Gateway
+	keptClients     map[clientKey]keptClient
+	clientLock      sync.RWMutex
+	networks        []string
+	docker          docker.Client
+	runtimeProvider runtime.RuntimeProvider
+	gateway         *Gateway
 }
 
 type clientConfig struct {
@@ -45,12 +48,13 @@ type clientConfig struct {
 	server        *mcp.Server
 }
 
-func newClientPool(options Options, docker docker.Client, gateway *Gateway) *clientPool {
+func newClientPool(options Options, docker docker.Client, runtimeProvider runtime.RuntimeProvider, gateway *Gateway) *clientPool {
 	return &clientPool{
-		Options:     options,
-		docker:      docker,
-		gateway:     gateway,
-		keptClients: make(map[clientKey]keptClient),
+		Options:         options,
+		docker:          docker,
+		runtimeProvider: runtimeProvider,
+		gateway:         gateway,
+		keptClients:     make(map[clientKey]keptClient),
 	}
 }
 
@@ -422,8 +426,43 @@ func (cg *clientGetter) GetClient(ctx context.Context) (mcpclient.Client, error)
 
 			var client mcpclient.Client
 
-			// Deprecated: Use Remote instead
-			if cg.serverConfig.Spec.SSEEndpoint != "" {
+			// Log catalog information for this server
+			transport := "stdio" // default
+			if cg.serverConfig.Spec.Remote.Transport != "" {
+				transport = cg.serverConfig.Spec.Remote.Transport
+			} else if cg.serverConfig.Spec.SSEEndpoint != "" {
+				transport = "sse"
+			} else if cg.serverConfig.Spec.Remote.URL != "" {
+				transport = "sse" // remote URL implies SSE/streaming
+			}
+			log.Logf("Client pool loading server '%s' from catalog: Image='%s', Transport='%s'", 
+				cg.serverConfig.Name, cg.serverConfig.Spec.Image, transport)
+
+			// Check if we're in ACA mode - if so, we need to handle it differently
+			if cg.cp.RuntimeMode == "ACA" {
+				// In ACA mode, stdio transport doesn't work across containers
+				// Check if this is a stdio server (no SSE/remote endpoint configured)
+				if cg.serverConfig.Spec.SSEEndpoint == "" && cg.serverConfig.Spec.Remote.URL == "" {
+					// Check if we have an SSE wrapper for this stdio server
+					if wrapperImage, hasWrapper := aca.GetSSEWrapper(cg.serverConfig.Spec.Image); hasWrapper {
+						log.Logf("  > Server '%s' is stdio in ACA mode, will connect to SSE wrapper at localhost:3000", cg.serverConfig.Name)
+						// Create a modified config that points to the wrapper container via HTTP
+						// In ACA, separate containers share localhost via the pod network
+						modifiedConfig := *cg.serverConfig
+						modifiedConfig.Spec.Remote.URL = "http://127.0.0.1:3000/sse"
+						modifiedConfig.Spec.Remote.Transport = "sse"
+						modifiedConfig.Spec.Image = wrapperImage
+						client = mcpclient.NewRemoteMCPClientWithRetry(&modifiedConfig)
+					} else {
+						// No wrapper available - this is an error
+						cg.err = fmt.Errorf("stdio MCP servers are not yet supported in ACA mode - server %s needs SSE or Remote transport", cg.serverConfig.Name)
+						return nil, cg.err
+					}
+				} else {
+					// Remote/SSE servers work fine in ACA
+					client = mcpclient.NewRemoteMCPClient(cg.serverConfig)
+				}
+			} else if cg.serverConfig.Spec.SSEEndpoint != "" {
 				client = mcpclient.NewRemoteMCPClient(cg.serverConfig)
 			} else if cg.serverConfig.Spec.Remote.URL != "" {
 				client = mcpclient.NewRemoteMCPClient(cg.serverConfig)

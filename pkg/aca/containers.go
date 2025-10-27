@@ -117,8 +117,7 @@ func buildContainerSpec(config runtime.ServerConfig, resources *ACAResources) (*
 		portInt32 := int32(port)
 		container.Probes = []*armappcontainers.ContainerAppProbe{
 			{
-				HTTPGet: &armappcontainers.ContainerAppProbeHTTPGet{
-					Path: strPtr("/health"),
+				TCPSocket: &armappcontainers.ContainerAppProbeTCPSocket{
 					Port: &portInt32,
 				},
 				InitialDelaySeconds: int32Ptr(5),
