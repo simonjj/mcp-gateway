@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -66,17 +67,23 @@ func (m *NotificationMonitor) Start(ctx context.Context) {
 
 // monitor runs the main monitoring loop with automatic reconnection
 func (m *NotificationMonitor) monitor(ctx context.Context) {
+	isACAMode := os.Getenv("MCP_RUNTIME") == "ACA"
+	
 	for {
 		select {
 		case <-ctx.Done():
-			log.Log("- OAuth notification monitor shutting down")
+			if !isACAMode {
+				log.Log("- OAuth notification monitor shutting down")
+			}
 			return
 		default:
 			m.connect(ctx)
 			// Reconnect after 5 seconds on disconnect
 			select {
 			case <-time.After(5 * time.Second):
-				log.Log("- OAuth notification monitor reconnecting...")
+				if !isACAMode {
+					log.Log("- OAuth notification monitor reconnecting...")
+				}
 			case <-ctx.Done():
 				return
 			}
@@ -86,11 +93,17 @@ func (m *NotificationMonitor) monitor(ctx context.Context) {
 
 // connect establishes SSE connection and processes events
 func (m *NotificationMonitor) connect(ctx context.Context) {
-	log.Logf("- Connecting to OAuth notification stream at %s", m.url)
+	isACAMode := os.Getenv("MCP_RUNTIME") == "ACA"
+	
+	if !isACAMode {
+		log.Logf("- Connecting to OAuth notification stream at %s", m.url)
+	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, m.url, nil)
 	if err != nil {
-		log.Logf("- Failed to create OAuth notification request: %v", err)
+		if !isACAMode {
+			log.Logf("- Failed to create OAuth notification request: %v", err)
+		}
 		return
 	}
 
@@ -100,13 +113,17 @@ func (m *NotificationMonitor) connect(ctx context.Context) {
 
 	resp, err := m.client.Do(req)
 	if err != nil {
-		log.Logf("- Failed to connect to OAuth notifications: %v", err)
+		if !isACAMode {
+			log.Logf("- Failed to connect to OAuth notifications: %v", err)
+		}
 		return
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		log.Logf("- OAuth notification stream unexpected status: %d %s", resp.StatusCode, resp.Status)
+		if !isACAMode {
+			log.Logf("- OAuth notification stream unexpected status: %d %s", resp.StatusCode, resp.Status)
+		}
 		return
 	}
 

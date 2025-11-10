@@ -119,6 +119,13 @@ func (p *ACAProvider) Initialize(ctx context.Context) error {
 	p.resources = resources
 	log.Logf("ACA Provider: ✓ Using resources: CPU=%s, Memory=%s", resources.CPU, resources.Memory)
 
+	// Step 5: Initialize stdio-to-SSE wrapper mappings
+	log.Logf("ACA Provider: Initializing stdio-to-SSE wrapper mappings...")
+	if err := InitWrappers(); err != nil {
+		log.Logf("ACA Provider: Warning - failed to initialize wrappers: %v", err)
+		// Continue anyway - GetSSEWrapper will handle missing wrappers gracefully
+	}
+
 	p.initialized = true
 	log.Logf("ACA Provider: ✓✓✓ Initialization completed successfully ✓✓✓")
 	return nil
