@@ -3,6 +3,8 @@ module github.com/docker/mcp-gateway
 go 1.24.4
 
 require (
+	github.com/Azure/azure-sdk-for-go/sdk/azidentity v1.7.0
+	github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/appcontainers/armappcontainers/v3 v3.1.0
 	github.com/Microsoft/go-winio v0.6.2
 	github.com/PaesslerAG/jsonpath v0.1.1
 	github.com/containerd/errdefs v1.0.0
@@ -38,9 +40,7 @@ require (
 
 require (
 	github.com/Azure/azure-sdk-for-go/sdk/azcore v1.17.1 // indirect
-	github.com/Azure/azure-sdk-for-go/sdk/azidentity v1.7.0 // indirect
 	github.com/Azure/azure-sdk-for-go/sdk/internal v1.10.0 // indirect
-	github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/appcontainers/armappcontainers/v3 v3.1.0 // indirect
 	github.com/AzureAD/microsoft-authentication-library-for-go v1.2.2 // indirect
 	github.com/dlclark/regexp2 v1.11.4 // indirect
 	github.com/go-sourcemap/sourcemap v2.1.3+incompatible // indirect
@@ -124,7 +124,7 @@ require (
 	github.com/moby/docker-image-spec v1.3.1 // indirect
 	github.com/moby/sys/atomicwriter v0.1.0 // indirect
 	github.com/moby/sys/sequential v0.6.0 // indirect
-	github.com/moby/term v0.5.2 // indirect
+	github.com/moby/term v0.5.2
 	github.com/morikuni/aec v1.0.0 // indirect
 	github.com/nozzle/throttler v0.0.0-20180817012639-2ea982251481 // indirect
 	github.com/oklog/ulid v1.3.1 // indirect
@@ -139,7 +139,6 @@ require (
 	github.com/sagikazarmark/locafero v0.9.0 // indirect
 	github.com/sassoftware/relic v7.2.1+incompatible // indirect
 	github.com/secure-systems-lab/go-securesystemslib v0.9.0 // indirect
-	github.com/sergi/go-diff v1.4.0 // indirect
 	github.com/shibumi/go-pathspec v1.3.0 // indirect
 	github.com/shopspring/decimal v1.4.0 // indirect
 	github.com/sigstore/protobuf-specs v0.4.3 // indirect

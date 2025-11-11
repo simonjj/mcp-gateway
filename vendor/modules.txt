@@ -556,8 +556,6 @@ github.com/secure-systems-lab/go-securesystemslib/cjson
 github.com/secure-systems-lab/go-securesystemslib/dsse
 github.com/secure-systems-lab/go-securesystemslib/encrypted
 github.com/secure-systems-lab/go-securesystemslib/signerverifier
-# github.com/sergi/go-diff v1.4.0
-## explicit; go 1.13
 # github.com/shibumi/go-pathspec v1.3.0
 ## explicit; go 1.17
 github.com/shibumi/go-pathspec

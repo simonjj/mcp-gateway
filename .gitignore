@@ -12,7 +12,6 @@ dist
 # Go specific
 *.exe
 *.test
-vendor/
 *.out
 *.log
 .env*

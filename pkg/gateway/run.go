@@ -49,15 +49,15 @@ type ServerCapabilities struct {
 
 type Gateway struct {
 	Options
-	docker           docker.Client
-	runtimeProvider  runtime.RuntimeProvider // Runtime provider abstraction (Docker or ACA)
-	configurator     Configurator
-	configuration    Configuration
-	clientPool       *clientPool
-	mcpServer        *mcp.Server
-	health           health.State
-	oauthProviders   map[string]*oauth.Provider
-	providersMu      sync.RWMutex
+	docker          docker.Client
+	runtimeProvider runtime.RuntimeProvider // Runtime provider abstraction (Docker or ACA)
+	configurator    Configurator
+	configuration   Configuration
+	clientPool      *clientPool
+	mcpServer       *mcp.Server
+	health          health.State
+	oauthProviders  map[string]*oauth.Provider
+	providersMu     sync.RWMutex
 	// subsChannel  chan SubsMessage
 
 	sessionCacheMu sync.RWMutex
@@ -322,7 +322,8 @@ func (g *Gateway) Run(ctx context.Context) error {
 
 	// Initialize authentication token for SSE and streaming modes
 	transport := strings.ToLower(g.Transport)
-	if transport == "sse" || transport == "http" || transport == "streamable" || transport == "streaming" || transport == "streamable-http" {
+	runtimeIsACA := strings.EqualFold(g.RuntimeMode, "ACA")
+	if !runtimeIsACA && (transport == "sse" || transport == "http" || transport == "streamable" || transport == "streaming" || transport == "streamable-http") {
 		token, wasGenerated, err := getOrGenerateAuthToken()
 		if err != nil {
 			return fmt.Errorf("failed to initialize auth token: %w", err)
@@ -349,12 +350,15 @@ func (g *Gateway) Run(ctx context.Context) error {
 		}
 		endpoint := "/sse"
 		url := formatGatewayURL(g.Port, endpoint)
-		if g.authTokenWasGenerated {
-			log.Logf("> Gateway URL: %s", url)
-			log.Logf("> Use Bearer token: %s", formatBearerToken(g.authToken))
-		} else {
-			log.Logf("> Gateway URL: %s", url)
-			log.Logf("> Use Bearer token from MCP_GATEWAY_AUTH_TOKEN environment variable")
+		log.Logf("> Gateway URL: %s", url)
+		if g.authToken != "" {
+			if g.authTokenWasGenerated {
+				log.Logf("> Use Bearer token: %s", formatBearerToken(g.authToken))
+			} else {
+				log.Logf("> Use Bearer token from MCP_GATEWAY_AUTH_TOKEN environment variable")
+			}
+		} else if runtimeIsACA {
+			log.Log("> MCP_RUNTIME=ACA: Bearer authentication disabled")
 		}
 		return g.startSseServer(ctx, ln)
 
@@ -362,12 +366,15 @@ func (g *Gateway) Run(ctx context.Context) error {
 		log.Log("> Start streaming server on port", g.Port)
 		endpoint := "/mcp"
 		url := formatGatewayURL(g.Port, endpoint)
-		if g.authTokenWasGenerated {
-			log.Logf("> Gateway URL: %s", url)
-			log.Logf("> Use Bearer token: %s", formatBearerToken(g.authToken))
-		} else {
-			log.Logf("> Gateway URL: %s", url)
-			log.Logf("> Use Bearer token from MCP_GATEWAY_AUTH_TOKEN environment variable")
+		log.Logf("> Gateway URL: %s", url)
+		if g.authToken != "" {
+			if g.authTokenWasGenerated {
+				log.Logf("> Use Bearer token: %s", formatBearerToken(g.authToken))
+			} else {
+				log.Logf("> Use Bearer token from MCP_GATEWAY_AUTH_TOKEN environment variable")
+			}
+		} else if runtimeIsACA {
+			log.Log("> MCP_RUNTIME=ACA: Bearer authentication disabled")
 		}
 		return g.startStreamingServer(ctx, ln)
 
