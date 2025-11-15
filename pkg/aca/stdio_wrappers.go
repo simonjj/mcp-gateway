@@ -7,10 +7,13 @@ import (
 	"net/http"
 	"os"
 	"regexp"
+	"strings"
 	"sync"
 	"time"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/docker/mcp-gateway/pkg/log"
 )
 
 //go:embed stdio_wrappers.yaml
@@ -21,10 +24,10 @@ var embeddedConfigYAML []byte
 
 // WrapperEntry represents a single stdio-to-SSE wrapper mapping
 type WrapperEntry struct {
-	Stdio       string `yaml:"stdio"`
-	SSE         string `yaml:"sse"`
-	MatchType   string `yaml:"match_type"`   // "exact" or "regex"
-	Description string `yaml:"description"`  // optional
+	Stdio         string         `yaml:"stdio"`
+	SSE           string         `yaml:"sse"`
+	MatchType     string         `yaml:"match_type"`  // "exact" or "regex"
+	Description   string         `yaml:"description"` // optional
 	compiledRegex *regexp.Regexp // cached compiled regex for regex match types
 }
 
@@ -64,9 +67,10 @@ func InitWrappers() error {
 	var yamlData []byte
 	var source string
 
+	var fetchErr error
 	if config.WrapperURL != "" {
-		fmt.Printf("- Fetching stdio wrapper mappings from: %s\n", config.WrapperURL)
-		
+		log.Logf("- Fetching stdio wrapper mappings from: %s", config.WrapperURL)
+
 		timeout := time.Duration(config.FetchTimeout) * time.Second
 		if config.FetchTimeout == 0 {
 			timeout = 10 * time.Second
@@ -74,24 +78,29 @@ func InitWrappers() error {
 
 		client := &http.Client{Timeout: timeout}
 		resp, err := client.Get(config.WrapperURL)
-		
+
 		if err == nil && resp.StatusCode == http.StatusOK {
 			defer resp.Body.Close()
 			yamlData, err = io.ReadAll(resp.Body)
 			if err == nil {
 				source = "online"
-				fmt.Println("- Successfully fetched online wrapper mappings")
+				log.Log("- Successfully fetched online wrapper mappings")
 			}
 		} else if err != nil {
-			fmt.Printf("- Failed to fetch online wrappers: %v\n", err)
+			fetchErr = err
+			log.Logf("Warning: Failed to fetch stdio wrapper mappings from %s: %v", config.WrapperURL, err)
 		} else {
-			fmt.Printf("- Failed to fetch online wrappers: HTTP %d\n", resp.StatusCode)
+			fetchErr = fmt.Errorf("HTTP %d", resp.StatusCode)
+			log.Logf("Warning: Failed to fetch stdio wrapper mappings from %s: HTTP %d", config.WrapperURL, resp.StatusCode)
 		}
 	}
 
 	// Fall back to embedded local version
 	if yamlData == nil {
-		fmt.Println("- Using embedded local wrapper mappings")
+		log.Log("- Using embedded local wrapper mappings")
+		if fetchErr != nil {
+			log.Log("  > Online fetch unavailable, falling back to cached wrapper mappings")
+		}
 		yamlData = embeddedWrappersYAML
 		source = "embedded"
 	}
@@ -108,7 +117,7 @@ func InitWrappers() error {
 		if entry.MatchType == "regex" {
 			compiled, err := regexp.Compile(entry.Stdio)
 			if err != nil {
-				fmt.Printf("- Warning: invalid regex pattern '%s': %v\n", entry.Stdio, err)
+				log.Logf("Warning: invalid regex pattern '%s': %v", entry.Stdio, err)
 				continue
 			}
 			entry.compiledRegex = compiled
@@ -118,13 +127,13 @@ func InitWrappers() error {
 	wrappers = wrappersData.Wrappers
 	initialized = true
 
-	// Print loaded mappings
-	fmt.Printf("- Loaded %d stdio-to-SSE wrapper mappings (source: %s):\n", len(wrappers), source)
-	for _, entry := range wrappers {
-		if entry.MatchType == "regex" {
-			fmt.Printf("  [regex] %s -> %s\n", entry.Stdio, entry.SSE)
-		} else {
-			fmt.Printf("  [exact] %s -> %s\n", entry.Stdio, entry.SSE)
+	log.Logf("- Loaded %d stdio-to-SSE wrapper mappings (source: %s)", len(wrappers), source)
+	previewCount := min(3, len(wrappers))
+	if previewCount > 0 {
+		log.Logf("  > Previewing first %d mappings", previewCount)
+		for i := 0; i < previewCount; i++ {
+			entry := wrappers[i]
+			log.Logf("    %s -> %s", summarizeImage(entry.Stdio), summarizeImage(entry.SSE))
 		}
 	}
 
@@ -167,6 +176,29 @@ func GetSSEWrapper(stdioImage string) (string, bool) {
 	}
 
 	return "", false
+}
+
+func summarizeImage(imageRef string) string {
+	if imageRef == "" {
+		return "<empty>"
+	}
+	parts := strings.Split(imageRef, "@sha256:")
+	if len(parts) != 2 {
+		return imageRef
+	}
+	base := parts[0]
+	digest := parts[1]
+	if len(digest) > 7 {
+		digest = digest[:7]
+	}
+	return fmt.Sprintf("%s@%s", base, digest)
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 // HasSSEWrapper checks if a stdio server has an SSE wrapper available

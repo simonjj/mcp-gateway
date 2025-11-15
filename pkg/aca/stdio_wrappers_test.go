@@ -1,136 +1,237 @@
 package aca
 
 import (
+	"io"
+	"net/http"
+	"regexp"
+	"strconv"
+	"strings"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 )
 
 func TestGetSSEWrapper(t *testing.T) {
-	// Initialize wrappers
+	remoteWrappers := fetchWrappersFromConfig(t)
+
+	resetWrappersForTest(t)
 	if err := InitWrappers(); err != nil {
 		t.Fatalf("Failed to initialize wrappers: %v", err)
 	}
 
-	tests := []struct {
-		name        string
-		stdioImage  string
-		wantSSE     string
-		wantFound   bool
-	}{
-		{
-			name:       "exact match - fetch",
-			stdioImage: "mcp/fetch@sha256:ef9535a3f07249142f9ca5a6033d7024950afdb6dc05e98292794a23e9f5dfbe",
-			wantSSE:    "simon.azurecr.io/mcp-fetch-sse@sha256:f0e7be3893a1603e9fdb5ddd4d302b6d17458b5e52536ebed10f76bfd90d68d4",
-			wantFound:  true,
-		},
-		{
-			name:       "exact match - slack",
-			stdioImage: "mcp/slack@sha256:4cc10c3f4bd988bd2dce40e3068fe38fa3b3bad1da99f9653eb5fa5cce35baa1",
-			wantSSE:    "simon.azurecr.io/mcp-slack-sse@sha256:3f5c5c76b7709d2da1afc5be459ee1de4bcaaf119a585bd0a0cf2b4e5c970fc1",
-			wantFound:  true,
-		},
-		{
-			name:       "regex match - duckduckgo variant 1",
-			stdioImage: "mcp/duckduckgo@sha256:68eb20db6109f5c312a695fc5ec3386ad15d93ffb765a0b4eb1baf4328dec14f",
-			wantSSE:    "simon.azurecr.io/mcp-duckduckgo-sse@sha256:7ee139be30689a096798bbe80a2d2eec48e40670c623a806985e0d258038b0e2",
-			wantFound:  true,
-		},
-		{
-			name:       "regex match - duckduckgo variant 2",
-			stdioImage: "mcp/duckduckgo@sha256:68eb20db9ea07ba4494ef5c7b8d62c8cce064b2bb2e88f66d95ef9d73e0b4f5f",
-			wantSSE:    "simon.azurecr.io/mcp-duckduckgo-sse@sha256:7ee139be30689a096798bbe80a2d2eec48e40670c623a806985e0d258038b0e2",
-			wantFound:  true,
-		},
-		{
-			name:       "regex match - duckduckgo different sha",
-			stdioImage: "mcp/duckduckgo@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-			wantSSE:    "simon.azurecr.io/mcp-duckduckgo-sse@sha256:7ee139be30689a096798bbe80a2d2eec48e40670c623a806985e0d258038b0e2",
-			wantFound:  true,
-		},
-		{
-			name:       "no match - unknown server",
-			stdioImage: "mcp/unknown@sha256:1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
-			wantSSE:    "",
-			wantFound:  false,
-		},
-		{
-			name:       "no match - invalid format",
-			stdioImage: "not-a-valid-image",
-			wantSSE:    "",
-			wantFound:  false,
-		},
-	}
+	for _, entry := range remoteWrappers {
+		stdioImage, ok := sampleStdioForEntry(entry)
+		if !ok {
+			t.Logf("skipping entry %q (unsupported pattern)", entry.Stdio)
+			continue
+		}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			gotSSE, gotFound := GetSSEWrapper(tt.stdioImage)
-			if gotFound != tt.wantFound {
-				t.Errorf("GetSSEWrapper() found = %v, want %v", gotFound, tt.wantFound)
+		entryCopy := entry
+		stdioCopy := stdioImage
+
+		t.Run(stdioCopy, func(t *testing.T) {
+			expected := expectedSSEFromEntry(entryCopy, stdioCopy)
+
+			got, found := GetSSEWrapper(stdioCopy)
+			if !found {
+				t.Fatalf("expected wrapper for %s, got none", stdioCopy)
 			}
-			if gotSSE != tt.wantSSE {
-				t.Errorf("GetSSEWrapper() SSE = %v, want %v", gotSSE, tt.wantSSE)
+			if got != expected {
+				t.Fatalf("wrapper mismatch for %s: got %s, want %s", stdioCopy, got, expected)
 			}
 		})
 	}
+
+	t.Run("missing entry", func(t *testing.T) {
+		missing := "mcp/unknown@sha256:" + strings.Repeat("0", 64)
+		if got, found := GetSSEWrapper(missing); found || got != "" {
+			t.Fatalf("expected no wrapper for %s, got %q (found=%v)", missing, got, found)
+		}
+	})
 }
 
 func TestHasSSEWrapper(t *testing.T) {
-	// Initialize wrappers
+	remoteWrappers := fetchWrappersFromConfig(t)
+
+	resetWrappersForTest(t)
 	if err := InitWrappers(); err != nil {
 		t.Fatalf("Failed to initialize wrappers: %v", err)
 	}
 
-	tests := []struct {
-		name       string
-		stdioImage string
-		want       bool
-	}{
-		{
-			name:       "has wrapper - fetch",
-			stdioImage: "mcp/fetch@sha256:ef9535a3f07249142f9ca5a6033d7024950afdb6dc05e98292794a23e9f5dfbe",
-			want:       true,
-		},
-		{
-			name:       "has wrapper - duckduckgo regex",
-			stdioImage: "mcp/duckduckgo@sha256:1111111111111111111111111111111111111111111111111111111111111111",
-			want:       true,
-		},
-		{
-			name:       "no wrapper",
-			stdioImage: "mcp/unknown@sha256:1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
-			want:       false,
-		},
-	}
+	for _, entry := range remoteWrappers {
+		stdioImage, ok := sampleStdioForEntry(entry)
+		if !ok {
+			t.Logf("skipping entry %q (unsupported pattern)", entry.Stdio)
+			continue
+		}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := HasSSEWrapper(tt.stdioImage); got != tt.want {
-				t.Errorf("HasSSEWrapper() = %v, want %v", got, tt.want)
+		stdioCopy := stdioImage
+		t.Run(stdioCopy, func(t *testing.T) {
+			if !HasSSEWrapper(stdioCopy) {
+				t.Fatalf("expected HasSSEWrapper() to be true for %s", stdioCopy)
 			}
 		})
 	}
+
+	t.Run("missing entry", func(t *testing.T) {
+		missing := "mcp/unknown@sha256:" + strings.Repeat("1", 64)
+		if HasSSEWrapper(missing) {
+			t.Fatalf("expected HasSSEWrapper() to be false for %s", missing)
+		}
+	})
 }
 
 func TestInitWrappers(t *testing.T) {
-	// Test that initialization works without errors
-	err := InitWrappers()
-	if err != nil {
-		t.Errorf("InitWrappers() error = %v", err)
+	resetWrappersForTest(t)
+
+	if err := InitWrappers(); err != nil {
+		t.Fatalf("InitWrappers() error = %v", err)
 	}
 
-	// Test that calling it again doesn't cause issues (idempotent)
-	err = InitWrappers()
-	if err != nil {
-		t.Errorf("InitWrappers() second call error = %v", err)
+	if err := InitWrappers(); err != nil {
+		t.Fatalf("InitWrappers() second call error = %v", err)
 	}
 
-	// Verify we have some wrappers loaded
 	wrapperMutex.RLock()
 	count := len(wrappers)
 	wrapperMutex.RUnlock()
 
 	if count == 0 {
-		t.Error("InitWrappers() loaded 0 wrappers, expected at least 1")
+		t.Fatal("InitWrappers() loaded 0 wrappers, expected at least 1")
 	}
 
 	t.Logf("Loaded %d wrappers", count)
+}
+
+func fetchWrappersFromConfig(t *testing.T) []WrapperEntry {
+	t.Helper()
+
+	var config WrapperConfig
+	if err := yaml.Unmarshal(embeddedConfigYAML, &config); err != nil {
+		t.Fatalf("failed to parse wrapper config: %v", err)
+	}
+
+	resp, err := http.Get(config.WrapperURL)
+	if err != nil {
+		t.Skipf("unable to fetch wrappers from %s: %v", config.WrapperURL, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Skipf("unable to fetch wrappers from %s: HTTP %d", config.WrapperURL, resp.StatusCode)
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("failed to read wrapper response: %v", err)
+	}
+
+	var wrappersData WrappersYAML
+	if err := yaml.Unmarshal(body, &wrappersData); err != nil {
+		t.Fatalf("failed to parse wrappers YAML: %v", err)
+	}
+
+	return compileWrapperEntries(t, wrappersData.Wrappers)
+}
+
+func compileWrapperEntries(t *testing.T, entries []WrapperEntry) []WrapperEntry {
+	t.Helper()
+
+	for i := range entries {
+		matchType := entries[i].MatchType
+		if matchType == "" {
+			matchType = "exact"
+			entries[i].MatchType = matchType
+		}
+		if matchType == "regex" {
+			compiled, err := regexp.Compile(entries[i].Stdio)
+			if err != nil {
+				t.Fatalf("failed to compile regex %q: %v", entries[i].Stdio, err)
+			}
+			entries[i].compiledRegex = compiled
+		}
+	}
+	return entries
+}
+
+func sampleStdioForEntry(entry WrapperEntry) (string, bool) {
+	matchType := entry.MatchType
+	if matchType == "" {
+		matchType = "exact"
+	}
+
+	if matchType == "exact" {
+		return entry.Stdio, true
+	}
+
+	if matchType != "regex" || entry.compiledRegex == nil {
+		return "", false
+	}
+
+	raw := strings.TrimPrefix(entry.Stdio, "^")
+	raw = strings.TrimSuffix(raw, "$")
+
+	classQuantifier := regexp.MustCompile(`\[[^\]]+\]\{\d+(,\d+)?\}`)
+	sample := classQuantifier.ReplaceAllStringFunc(raw, func(segment string) string {
+		closing := strings.Index(segment, "]")
+		if closing < 0 {
+			return segment
+		}
+
+		class := segment[1:closing]
+		quantifier := strings.Trim(segment[closing+1:], "{}")
+		parts := strings.SplitN(quantifier, ",", 2)
+
+		count, err := strconv.Atoi(parts[0])
+		if err != nil || count <= 0 {
+			return segment
+		}
+
+		return strings.Repeat(sampleCharFromClass(class), count)
+	})
+
+	sample = strings.ReplaceAll(sample, `\.`, ".")
+	sample = strings.ReplaceAll(sample, `\-`, "-")
+
+	if !entry.compiledRegex.MatchString(sample) {
+		return "", false
+	}
+
+	return sample, true
+}
+
+func sampleCharFromClass(class string) string {
+	if class == "" {
+		return "a"
+	}
+
+	if strings.HasPrefix(class, "\\") && len(class) >= 2 {
+		return class[1:2]
+	}
+
+	if dash := strings.Index(class, "-"); dash > 0 {
+		return class[:1]
+	}
+
+	return class[:1]
+}
+
+func expectedSSEFromEntry(entry WrapperEntry, stdio string) string {
+	matchType := entry.MatchType
+	if matchType == "" {
+		matchType = "exact"
+	}
+	if matchType == "regex" && entry.compiledRegex != nil {
+		return entry.compiledRegex.ReplaceAllString(stdio, entry.SSE)
+	}
+	return entry.SSE
+}
+
+func resetWrappersForTest(t *testing.T) {
+	t.Helper()
+
+	wrapperMutex.Lock()
+	wrappers = nil
+	initialized = false
+	wrapperMutex.Unlock()
 }

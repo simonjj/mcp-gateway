@@ -2,7 +2,7 @@
 # The online URL is checked first; if unreachable, the local stdio_wrappers.yaml is used
 
 # URL to the online wrapper mappings (GitHub Gist or other YAML file)
-wrapper_url: "https://gist.githubusercontent.com/simonjj/015b7e375ac1b8303cc7d5b5e923c910/raw/stdio_wrappers.yaml"
+wrapper_url: "https://raw.githubusercontent.com/microsoft/azure-container-apps/refs/heads/main/preview/ai-compose/mcp-gateway-map.yml"
 
 # Timeout for fetching the online version (in seconds)
 fetch_timeout: 10
